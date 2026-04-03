@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE="stardust-gpu4-stardust"
 REMOTE_DIR="~/Projects/ocr-provider"
 
@@ -13,6 +14,6 @@ rsync -az \
   --exclude 'runtime' \
   --exclude 'runtime-cache' \
   --exclude 'deployments/**/*.env' \
-  ./ "$REMOTE:$REMOTE_DIR/"
+  "$ROOT_DIR/" "$REMOTE:$REMOTE_DIR/"
 
 echo "Deployed to $REMOTE:$REMOTE_DIR"
