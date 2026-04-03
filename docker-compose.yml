@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    gpus: all
+    shm_size: ${SHM_SIZE:-2g}
+    ports:
+      - "${BIND_HOST}:${PORT}:8000"
+    environment:
+      SERVICE_NAME: ${SERVICE_NAME}
+      MODEL_ID: ${MODEL_ID}
+      MODEL_ALIAS: ${MODEL_ALIAS:-}
+      API_KEY: ${API_KEY:-}
+      OCR_LANGUAGES: ${OCR_LANGUAGES}
+      USE_GPU: ${USE_GPU:-true}
+      OCR_PARAGRAPH: ${OCR_PARAGRAPH:-true}
+      MODEL_STORAGE_DIR: ${MODEL_STORAGE_DIR:-./runtime-cache/easyocr-zh-en}
+      PDF_RENDER_SCALE: ${PDF_RENDER_SCALE:-2.0}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-}
+    volumes:
+      - ${MODEL_STORAGE_DIR:-./runtime-cache/easyocr-zh-en}:${MODEL_STORAGE_DIR:-/app/runtime-cache/easyocr-zh-en}
