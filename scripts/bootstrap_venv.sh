@@ -13,7 +13,7 @@ fi
 "$VENV_DIR/bin/pip" install --upgrade pip
 
 if ! "$VENV_DIR/bin/python" -c 'import torch, torchvision' >/dev/null 2>&1; then
-  "$VENV_DIR/bin/pip" install --index-url "$TORCH_INDEX_URL" torch torchvision
+  "$VENV_DIR/bin/pip" install --force-reinstall --index-url "$TORCH_INDEX_URL" torch torchvision
 fi
 
 "$VENV_DIR/bin/pip" install -e "$ROOT_DIR"
