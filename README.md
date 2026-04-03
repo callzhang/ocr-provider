@@ -5,9 +5,34 @@ Standalone OCR service for `memory-connector` document ingest.
 ## Purpose
 
 - Run independently from `memory-connector`
-- Keep OCR execution isolated from embedding traffic even on the same GPU host
-- Expose one HTTP API for image uploads and scanned-PDF fallback
-- Deploy on `stardust-gpu4` and publish through Cloudflare under `preseen.ai`
+- Keep OCR execution isolated from embedding traffic even on the same host
+- Expose one HTTP API for image uploads, scanned-PDF fallback, and embedded-image OCR
+- Support both lightweight local engines and GPU-oriented engines from the same repo
+
+## Runtime Model
+
+The service now uses explicit env-driven OCR runtime selection instead of implicit `USE_GPU` toggles.
+
+Core env vars:
+
+```bash
+SERVICE_NAME=ocr-provider
+OCR_PROVIDER=rapidocr          # rapidocr | tesseract | easyocr
+OCR_MODEL=rapidocr:ch_sim+en
+OCR_MODEL_ALIAS=rapidocr-zh-en
+OCR_LANGUAGES=ch_sim,en
+OCR_DEVICE=cpu                # cpu | cuda | auto
+OCR_MODEL_STORAGE_DIR=./runtime-cache/rapidocr-zh-en
+OCR_PARAGRAPH=true
+PDF_RENDER_SCALE=2.0
+API_KEY=change-me
+```
+
+Notes:
+
+- `rapidocr` is the current recommended lightweight local default.
+- `tesseract` is the fastest local CPU option in our benchmark, but quality depends heavily on installed language packs.
+- `easyocr` remains available for CPU/GPU runs and is the current GPU deployment path on `stardust-gpu4`.
 
 ## API
 
@@ -19,7 +44,7 @@ Standalone OCR service for `memory-connector` document ingest.
 
 ```json
 {
-  "model": "easyocr:ch_sim+en",
+  "model": "rapidocr:ch_sim+en",
   "languages": ["ch_sim", "en"],
   "inputs": [
     {
@@ -34,15 +59,39 @@ Standalone OCR service for `memory-connector` document ingest.
 
 ## Local Development
 
+Recommended local bootstrap:
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e .
 cp .env.example .env
 set -a && source .env && set +a
-uvicorn provider.app:app --host 127.0.0.1 --port 7998
+./scripts/bootstrap_venv.sh
+./scripts/start_host_instance.sh .env
 ```
+
+Sample local presets:
+
+- `.env.example`: `rapidocr` + CPU, meant for running directly beside the backend service
+- `deployments/gpu4/easyocr-zh-en.env.example`: `easyocr` + CUDA, meant for `stardust-gpu4`
+
+If you use `tesseract`, make sure the host has the matching language packs installed. On macOS/Homebrew, the stock install may only include `eng`.
+
+## Benchmark
+
+The repo is benchmarked from the main workspace with:
+
+```bash
+./ocr-provider/.venv/bin/python scripts/benchmark_document_ocr.py
+```
+
+Latest report:
+
+- [OCR_PROVIDER_BENCHMARK.md](/Users/derek/Projects/memory-connector/docs/OCR_PROVIDER_BENCHMARK.md)
+
+At the time of the current report on Derek's local CPU machine:
+
+- `rapidocr-local-cpu` had the best mixed Chinese+English accuracy across `image/pdf/docx/pptx`
+- `tesseract-local-cpu` was the fastest but materially less accurate on Chinese text with the local tessdata setup
+- `easyocr-local-cpu` failed on the generated benchmark image and is better kept as the GPU-oriented option unless retuned
 
 ## Stardust GPU4
 
@@ -56,6 +105,7 @@ Recommended host workflow:
 bash scripts/deploy_gpu4.sh
 ssh stardust-gpu4-stardust
 cd ~/Projects/ocr-provider
+cp deployments/gpu4/easyocr-zh-en.env.example deployments/gpu4/easyocr-zh-en.env
 ./scripts/start_host_instance.sh deployments/gpu4/easyocr-zh-en.env
 ./scripts/start_public_cloudflared.sh deployments/gpu4/easyocr-zh-en.env
 ```

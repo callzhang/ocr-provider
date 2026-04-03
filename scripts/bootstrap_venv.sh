@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
+OCR_PROVIDER="${OCR_PROVIDER:-rapidocr}"
 
 if [[ ! -d "$VENV_DIR" ]]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
@@ -12,8 +13,10 @@ fi
 
 "$VENV_DIR/bin/pip" install --upgrade pip
 
-if ! "$VENV_DIR/bin/python" -c 'import torch, torchvision' >/dev/null 2>&1; then
-  "$VENV_DIR/bin/pip" install --force-reinstall --index-url "$TORCH_INDEX_URL" torch torchvision
+if [[ "$OCR_PROVIDER" == "easyocr" ]]; then
+  if ! "$VENV_DIR/bin/python" -c 'import torch, torchvision' >/dev/null 2>&1; then
+    "$VENV_DIR/bin/pip" install --force-reinstall --index-url "$TORCH_INDEX_URL" torch torchvision
+  fi
 fi
 
-"$VENV_DIR/bin/pip" install -e "$ROOT_DIR"
+"$VENV_DIR/bin/pip" install -e "$ROOT_DIR[benchmark]"

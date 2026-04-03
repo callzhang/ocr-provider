@@ -39,13 +39,18 @@ fi
 
 mkdir -p "$RUNTIME_DIR"
 
+MODEL_CACHE_DIR="${OCR_MODEL_STORAGE_DIR:-${MODEL_STORAGE_DIR:-./runtime-cache/ocr}}"
 if [[ -n "${HF_CACHE_DIR:-}" ]]; then
   mkdir -p "$ROOT_DIR/${HF_CACHE_DIR#./}"
   export HF_HOME="$ROOT_DIR/${HF_CACHE_DIR#./}"
   export HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
 fi
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+mkdir -p "$ROOT_DIR/${MODEL_CACHE_DIR#./}"
+
+if [[ "${OCR_DEVICE:-cpu}" == "cuda" ]]; then
+  export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+fi
 
 nohup "$ROOT_DIR/.venv/bin/uvicorn" provider.app:app \
   --app-dir "$ROOT_DIR" \

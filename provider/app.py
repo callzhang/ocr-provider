@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import base64
-import io
 import logging
 from typing import Any, Literal
 
 import fitz
-import numpy as np
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
-from PIL import Image
 
 from provider.config import Settings
+from provider.engines import EngineOcrResult, OcrEngine, build_engine
 
 log = logging.getLogger("ocr_provider")
 logging.basicConfig(level="INFO")
@@ -65,47 +63,11 @@ class ModelList(BaseModel):
 class OcrRuntime:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._reader = self._load_reader()
+        self._engine: OcrEngine = build_engine(settings)
+        self.device_name = self._engine.device_name
 
-    def _load_reader(self) -> Any:
-        import torch
-        import easyocr
-
-        self._settings.model_storage_dir.mkdir(parents=True, exist_ok=True)
-        use_gpu = self._settings.use_gpu and torch.cuda.is_available()
-        reader = easyocr.Reader(
-            list(self._settings.ocr_languages),
-            gpu=use_gpu,
-            model_storage_directory=str(self._settings.model_storage_dir),
-            download_enabled=True,
-        )
-        self.device_name = "cuda" if use_gpu else "cpu"
-        return reader
-
-    def _image_from_bytes(self, data: bytes) -> np.ndarray:
-        image = Image.open(io.BytesIO(data)).convert("RGB")
-        return np.asarray(image)
-
-    def _read_lines(self, image: np.ndarray) -> tuple[str, float | None]:
-        results = self._reader.readtext(image, detail=1, paragraph=self._settings.paragraph)
-        texts: list[str] = []
-        confidences: list[float] = []
-        for item in results:
-            if len(item) < 3:
-                continue
-            text = str(item[1]).strip()
-            if not text:
-                continue
-            texts.append(text)
-            try:
-                confidences.append(float(item[2]))
-            except (TypeError, ValueError):
-                continue
-        confidence = round(sum(confidences) / len(confidences), 4) if confidences else None
-        return "\n".join(texts).strip(), confidence
-
-    def ocr_image(self, data: bytes) -> tuple[str, float | None]:
-        return self._read_lines(self._image_from_bytes(data))
+    def ocr_image(self, data: bytes) -> EngineOcrResult:
+        return self._engine.ocr_image(data)
 
     def ocr_pdf(self, data: bytes, page_numbers: list[int] | None) -> list[OcrPageResult]:
         pdf = fitz.open(stream=data, filetype="pdf")
@@ -124,13 +86,13 @@ class OcrRuntime:
                 continue
             page = pdf.load_page(page_number - 1)
             pixmap = page.get_pixmap(matrix=matrix, alpha=False)
-            text, confidence = self.ocr_image(pixmap.tobytes("png"))
+            result = self.ocr_image(pixmap.tobytes("png"))
             page_results.append(
                 OcrPageResult(
                     page_number=page_number,
-                    text=text,
-                    confidence=confidence,
-                    warnings=[] if text else [f"no text recognized on page {page_number}"],
+                    text=result.text,
+                    confidence=result.confidence,
+                    warnings=result.warnings or ([] if result.text else [f"no text recognized on page {page_number}"]),
                 )
             )
         return page_results
@@ -147,13 +109,14 @@ def _require_api_key(settings: Settings, authorization: str | None) -> None:
 def create_app(settings: Settings | None = None, runtime: OcrRuntime | None = None) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
     resolved_runtime = runtime or OcrRuntime(resolved_settings)
-    app = FastAPI(title="OCR Provider", version="0.1.0")
+    app = FastAPI(title="OCR Provider", version="0.2.0")
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
         return {
             "ok": True,
             "service": resolved_settings.service_name,
+            "provider": resolved_settings.ocr_provider,
             "model": resolved_settings.model_id,
             "languages": list(resolved_settings.ocr_languages),
             "device": resolved_runtime.device_name,
@@ -192,14 +155,13 @@ def create_app(settings: Settings | None = None, runtime: OcrRuntime | None = No
                     )
                 )
                 continue
-            text, confidence = resolved_runtime.ocr_image(data)
-            warnings = [] if text else ["no text recognized"]
+            result = resolved_runtime.ocr_image(data)
             items.append(
                 OcrItem(
                     source_id=item.source_id,
-                    text=text,
-                    confidence=confidence,
-                    warnings=warnings,
+                    text=result.text,
+                    confidence=result.confidence,
+                    warnings=result.warnings or ([] if result.text else ["no text recognized"]),
                 )
             )
 
