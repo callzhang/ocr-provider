@@ -21,7 +21,7 @@ OCR_PROVIDER=rapidocr          # rapidocr | tesseract | easyocr
 OCR_MODEL=rapidocr:ch_sim+en
 OCR_MODEL_ALIAS=rapidocr-zh-en
 OCR_LANGUAGES=ch_sim,en
-OCR_DEVICE=cpu                # cpu | cuda | auto
+OCR_DEVICE=cpu                # cpu | cuda | mps | coreml | auto
 OCR_MODEL_STORAGE_DIR=./runtime-cache/rapidocr-zh-en
 OCR_PARAGRAPH=true
 PDF_RENDER_SCALE=2.0
@@ -31,8 +31,9 @@ API_KEY=change-me
 Notes:
 
 - `rapidocr` is the current recommended lightweight local default.
+- On macOS, `rapidocr` can use `OCR_DEVICE=coreml` to route ONNX Runtime through `CoreMLExecutionProvider`.
 - `tesseract` is the fastest local CPU option in our benchmark, but quality depends heavily on installed language packs.
-- `easyocr` remains available for CPU/GPU runs and is the current GPU deployment path on `stardust-gpu4`.
+- `easyocr` remains available for CPU/GPU runs and is the current GPU deployment path on `stardust-gpu4`; on macOS it also accepts `OCR_DEVICE=mps` when PyTorch MPS is available.
 
 ## API
 
@@ -90,8 +91,10 @@ Latest report:
 At the time of the current report on Derek's local CPU machine:
 
 - `rapidocr-local-cpu` had the best mixed Chinese+English accuracy across `image/pdf/docx/pptx`
+- `rapidocr-macos-coreml` matched CPU accuracy on Derek's macOS host, but it was slower than `rapidocr-local-cpu` in the current run
 - `tesseract-local-cpu` was the fastest but materially less accurate on Chinese text with the local tessdata setup
 - `easyocr-local-cpu` failed on the generated benchmark image and is better kept as the GPU-oriented option unless retuned
+- `easyocr-macos-mps` did execute with MPS available on Derek's machine, but still returned no usable text on the benchmark fixtures
 
 ## Stardust GPU4
 

@@ -65,9 +65,20 @@ class Settings:
             model_alias=os.getenv("OCR_MODEL_ALIAS") or os.getenv("MODEL_ALIAS") or None,
             api_key=os.getenv("API_KEY") or None,
             ocr_languages=_env_languages("OCR_LANGUAGES", ("ch_sim", "en")),
-            ocr_device=(os.getenv("OCR_DEVICE") or _legacy_device_default()).strip().lower(),
+            ocr_device=_normalize_device(os.getenv("OCR_DEVICE") or _legacy_device_default()),
             paragraph=_env_bool("OCR_PARAGRAPH", True),
             model_storage_dir=Path(os.getenv("OCR_MODEL_STORAGE_DIR") or os.getenv("MODEL_STORAGE_DIR") or "./runtime-cache/ocr"),
             render_scale=float(os.getenv("PDF_RENDER_SCALE", "2.0")),
             tesseract_cmd=os.getenv("TESSERACT_CMD") or None,
         )
+
+
+def _normalize_device(value: str) -> str:
+    normalized = str(value or "cpu").strip().lower()
+    aliases = {
+        "gpu": "cuda",
+        "apple": "coreml",
+        "apple-gpu": "coreml",
+        "metal": "coreml",
+    }
+    return aliases.get(normalized, normalized)
