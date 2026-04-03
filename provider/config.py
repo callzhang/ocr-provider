@@ -30,7 +30,7 @@ def _env_languages(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 
 def _legacy_device_default() -> str:
     if "USE_GPU" not in os.environ:
-        return "cpu"
+        return "auto"
     return "cuda" if _env_bool("USE_GPU", False) else "cpu"
 
 
@@ -47,6 +47,13 @@ class Settings:
     model_storage_dir: Path
     render_scale: float
     tesseract_cmd: str | None
+    paddle_text_detection_model_name: str | None
+    paddle_text_recognition_model_name: str | None
+    paddle_lang: str | None
+    paddle_use_doc_orientation_classify: bool
+    paddle_use_doc_unwarping: bool
+    paddle_use_textline_orientation: bool
+    paddle_disable_model_source_check: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -70,6 +77,13 @@ class Settings:
             model_storage_dir=Path(os.getenv("OCR_MODEL_STORAGE_DIR") or os.getenv("MODEL_STORAGE_DIR") or "./runtime-cache/ocr"),
             render_scale=float(os.getenv("PDF_RENDER_SCALE", "2.0")),
             tesseract_cmd=os.getenv("TESSERACT_CMD") or None,
+            paddle_text_detection_model_name=os.getenv("PADDLE_OCR_TEXT_DETECTION_MODEL_NAME") or None,
+            paddle_text_recognition_model_name=os.getenv("PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME") or None,
+            paddle_lang=os.getenv("PADDLE_OCR_LANG") or None,
+            paddle_use_doc_orientation_classify=_env_bool("PADDLE_OCR_USE_DOC_ORIENTATION_CLASSIFY", False),
+            paddle_use_doc_unwarping=_env_bool("PADDLE_OCR_USE_DOC_UNWARPING", False),
+            paddle_use_textline_orientation=_env_bool("PADDLE_OCR_USE_TEXTLINE_ORIENTATION", False),
+            paddle_disable_model_source_check=_env_bool("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", True),
         )
 
 

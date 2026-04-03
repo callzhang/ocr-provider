@@ -14,13 +14,13 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 ENV PYTHONUNBUFFERED=1
 ENV SERVICE_NAME=ocr-provider
-ENV OCR_PROVIDER=easyocr
-ENV OCR_MODEL=easyocr:ch_sim+en
-ENV OCR_MODEL_ALIAS=easyocr-zh-en
+ENV OCR_PROVIDER=rapidocr
+ENV OCR_MODEL=rapidocr:ch_sim+en
+ENV OCR_MODEL_ALIAS=rapidocr-zh-en
 ENV OCR_LANGUAGES=ch_sim,en
-ENV OCR_DEVICE=cuda
+ENV OCR_DEVICE=auto
 ENV OCR_PARAGRAPH=true
-ENV OCR_MODEL_STORAGE_DIR=/app/runtime-cache/easyocr-zh-en
+ENV OCR_MODEL_STORAGE_DIR=/app/runtime-cache/rapidocr-zh-en
 ENV PDF_RENDER_SCALE=2.0
 ENV PORT=8000
 

@@ -8,6 +8,7 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$1"
+VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   if [[ -f "${ENV_FILE}.example" ]]; then
@@ -48,11 +49,11 @@ fi
 
 mkdir -p "$ROOT_DIR/${MODEL_CACHE_DIR#./}"
 
-if [[ "${OCR_DEVICE:-cpu}" == "cuda" ]]; then
+if [[ "${OCR_DEVICE:-auto}" == "cuda" ]]; then
   export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 fi
 
-nohup "$ROOT_DIR/.venv/bin/uvicorn" provider.app:app \
+nohup "$VENV_DIR/bin/uvicorn" provider.app:app \
   --app-dir "$ROOT_DIR" \
   --host "${BIND_HOST:-127.0.0.1}" \
   --port "${PORT:-8000}" \

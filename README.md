@@ -7,21 +7,31 @@ Standalone OCR service for `memory-connector` document ingest.
 - Run independently from `memory-connector`
 - Keep OCR execution isolated from embedding traffic even on the same host
 - Expose one HTTP API for image uploads, scanned-PDF fallback, and embedded-image OCR
-- Support both lightweight local engines and GPU-oriented engines from the same repo
+- Use one production default across macOS and Linux hosts
 
-## Runtime Model
+## Production Profile
 
-The service now uses explicit env-driven OCR runtime selection instead of implicit `USE_GPU` toggles.
+The service is currently documented and configured around one OCR profile:
+
+- `OCR_PROVIDER=rapidocr`
+- `OCR_MODEL=rapidocr:ch_sim+en`
+- `OCR_DEVICE=auto`
+
+`OCR_DEVICE=auto` means:
+
+- prefer `cuda` on Linux GPU hosts when ONNX Runtime exposes CUDA
+- otherwise prefer `coreml` on macOS when ONNX Runtime exposes CoreML
+- otherwise fall back to `cpu`
 
 Core env vars:
 
 ```bash
 SERVICE_NAME=ocr-provider
-OCR_PROVIDER=rapidocr          # rapidocr | tesseract | easyocr
+OCR_PROVIDER=rapidocr
 OCR_MODEL=rapidocr:ch_sim+en
 OCR_MODEL_ALIAS=rapidocr-zh-en
 OCR_LANGUAGES=ch_sim,en
-OCR_DEVICE=cpu                # cpu | cuda | mps | coreml | auto
+OCR_DEVICE=auto
 OCR_MODEL_STORAGE_DIR=./runtime-cache/rapidocr-zh-en
 OCR_PARAGRAPH=true
 PDF_RENDER_SCALE=2.0
@@ -30,10 +40,9 @@ API_KEY=change-me
 
 Notes:
 
-- `rapidocr` is the current recommended lightweight local default.
-- On macOS, `rapidocr` can use `OCR_DEVICE=coreml` to route ONNX Runtime through `CoreMLExecutionProvider`.
-- `tesseract` is the fastest local CPU option in our benchmark, but quality depends heavily on installed language packs.
-- `easyocr` remains available for CPU/GPU runs and is the current GPU deployment path on `stardust-gpu4`; on macOS it also accepts `OCR_DEVICE=mps` when PyTorch MPS is available.
+- `rapidocr` is the only production-supported OCR profile in this repo right now.
+- The service code still contains experimental engine paths from evaluation work, but deployment docs intentionally standardize on `rapidocr`.
+- `rapidocr` uses ONNX Runtime and can route to CUDA or CoreML when the matching execution provider is available.
 
 ## API
 
@@ -71,10 +80,9 @@ set -a && source .env && set +a
 
 Sample local presets:
 
-- `.env.example`: `rapidocr` + CPU, meant for running directly beside the backend service
-- `deployments/gpu4/easyocr-zh-en.env.example`: `easyocr` + CUDA, meant for `stardust-gpu4`
-
-If you use `tesseract`, make sure the host has the matching language packs installed. On macOS/Homebrew, the stock install may only include `eng`.
+- `.env.example`: `rapidocr` + `auto`, for local runs beside the backend service
+- `deployments/local/rapidocr-cpu.env.example`: `rapidocr` + `cpu`, for deterministic local CPU fallback
+- `deployments/gpu4/rapidocr-auto.env.example`: `rapidocr` + `auto`, for the shared `stardust-gpu4` host
 
 ## Benchmark
 
@@ -84,23 +92,22 @@ The repo is benchmarked from the main workspace with:
 ./ocr-provider/.venv/bin/python scripts/benchmark_document_ocr.py
 ```
 
-Latest report:
+Current decision material:
 
-- [OCR_PROVIDER_BENCHMARK.md](/Users/derek/Projects/memory-connector/docs/OCR_PROVIDER_BENCHMARK.md)
+- [OCR_PROVIDER_REALWORLD_BENCHMARK.md](/Users/derek/Projects/memory-connector/docs/OCR_PROVIDER_REALWORLD_BENCHMARK.md)
 
-At the time of the current report on Derek's local CPU machine:
+Decision summary:
 
-- `rapidocr-local-cpu` had the best mixed Chinese+English accuracy across `image/pdf/docx/pptx`
-- `rapidocr-macos-coreml` matched CPU accuracy on Derek's macOS host, but it was slower than `rapidocr-local-cpu` in the current run
-- `tesseract-local-cpu` was the fastest but materially less accurate on Chinese text with the local tessdata setup
-- `easyocr-local-cpu` failed on the generated benchmark image and is better kept as the GPU-oriented option unless retuned
-- `easyocr-macos-mps` did execute with MPS available on Derek's machine, but still returned no usable text on the benchmark fixtures
+- The real-world benchmark uses `dfcfw-page1.png` and ground truth extracted from the corresponding PDF page.
+- `rapidocr` was the only tested lightweight engine that produced usable Chinese output on that sample.
+- On this macOS host, `rapidocr` under `OCR_DEVICE=auto` resolved to CoreML and scored `0.6866` on the PNG path.
 
 ## Stardust GPU4
 
 - Repo target: `stardust@stardust-gpu4:~/Projects/ocr-provider`
 - Private bind: `127.0.0.1:7998`
 - Public base URL: `https://ocr.preseen.ai/v1`
+- Deployment policy: do not modify shared host CUDA or other system-level GPU components
 
 Recommended host workflow:
 
@@ -108,9 +115,9 @@ Recommended host workflow:
 bash scripts/deploy_gpu4.sh
 ssh stardust-gpu4-stardust
 cd ~/Projects/ocr-provider
-cp deployments/gpu4/easyocr-zh-en.env.example deployments/gpu4/easyocr-zh-en.env
-./scripts/start_host_instance.sh deployments/gpu4/easyocr-zh-en.env
-./scripts/start_public_cloudflared.sh deployments/gpu4/easyocr-zh-en.env
+cp deployments/gpu4/rapidocr-auto.env.example deployments/gpu4/rapidocr-auto.env
+./scripts/start_host_instance.sh deployments/gpu4/rapidocr-auto.env
+./scripts/start_public_cloudflared.sh deployments/gpu4/rapidocr-auto.env
 ```
 
 Before starting the named tunnel, create it and attach DNS from a machine already logged into Cloudflare:
@@ -121,7 +128,7 @@ cloudflared tunnel route dns ocr-provider-preseen-ai ocr.preseen.ai
 cloudflared tunnel token ocr-provider-preseen-ai
 ```
 
-Set the returned token into `deployments/gpu4/easyocr-zh-en.env`:
+Set the returned token into `deployments/gpu4/rapidocr-auto.env`:
 
 ```bash
 PUBLIC_TUNNEL_TOKEN=<TOKEN>
