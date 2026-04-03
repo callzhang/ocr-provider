@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import logging
+import os
+import subprocess
+import threading
+import time
 from typing import Any, Literal
 
 import fitz
@@ -65,6 +70,7 @@ class OcrRuntime:
         self._settings = settings
         self._engine: OcrEngine = build_engine(settings)
         self.device_name = self._engine.device_name
+        self._admission = RuntimeAdmissionController(settings, self.device_name)
 
     def ocr_image(self, data: bytes) -> EngineOcrResult:
         return self._engine.ocr_image(data)
@@ -97,6 +103,135 @@ class OcrRuntime:
             )
         return page_results
 
+    @contextmanager
+    def request_slot(self) -> Any:
+        with self._admission.acquire():
+            yield
+
+    def admission_status(self) -> dict[str, Any]:
+        return self._admission.status()
+
+
+class RuntimeBusyError(RuntimeError):
+    def __init__(self, snapshot: dict[str, Any]) -> None:
+        super().__init__("OCR runtime is busy")
+        self.snapshot = snapshot
+
+
+class RuntimeAdmissionController:
+    def __init__(self, settings: Settings, device_name: str) -> None:
+        self._settings = settings
+        self._device_name = device_name
+        self._condition = threading.Condition()
+        self._active_requests = 0
+        self._queued_requests = 0
+        self._last_probe_error: str | None = None
+
+    @contextmanager
+    def acquire(self) -> Any:
+        deadline = time.monotonic() + self._settings.queue_timeout_seconds
+        acquired = False
+        with self._condition:
+            self._queued_requests += 1
+            try:
+                while True:
+                    snapshot = self._snapshot_locked()
+                    dynamic_limit = int(snapshot["dynamic_limit"])
+                    if dynamic_limit > 0 and self._active_requests < dynamic_limit:
+                        self._active_requests += 1
+                        self._queued_requests -= 1
+                        acquired = True
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RuntimeBusyError(snapshot)
+                    self._condition.wait(timeout=min(self._settings.queue_poll_seconds, remaining))
+            finally:
+                if not acquired:
+                    self._queued_requests -= 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._active_requests = max(0, self._active_requests - 1)
+                self._condition.notify_all()
+
+    def status(self) -> dict[str, Any]:
+        with self._condition:
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self) -> dict[str, Any]:
+        free_vram_mb: int | None = None
+        total_vram_mb: int | None = None
+        dynamic_limit = self._settings.max_concurrency
+        if self._device_name == "cuda":
+            free_vram_mb, total_vram_mb = self._probe_cuda_memory_mb()
+            if free_vram_mb is None:
+                dynamic_limit = 1
+            else:
+                headroom_mb = free_vram_mb - self._settings.gpu_min_free_vram_mb
+                dynamic_limit = min(
+                    self._settings.max_concurrency,
+                    max(0, headroom_mb // self._settings.gpu_per_request_vram_mb),
+                )
+        return {
+            "device": self._device_name,
+            "active_requests": self._active_requests,
+            "queued_requests": self._queued_requests,
+            "max_concurrency": self._settings.max_concurrency,
+            "dynamic_limit": dynamic_limit,
+            "queue_timeout_seconds": self._settings.queue_timeout_seconds,
+            "gpu_min_free_vram_mb": self._settings.gpu_min_free_vram_mb if self._device_name == "cuda" else None,
+            "gpu_per_request_vram_mb": self._settings.gpu_per_request_vram_mb if self._device_name == "cuda" else None,
+            "free_vram_mb": free_vram_mb,
+            "total_vram_mb": total_vram_mb,
+            "last_probe_error": self._last_probe_error,
+        }
+
+    def _probe_cuda_memory_mb(self) -> tuple[int | None, int | None]:
+        command = [
+            "nvidia-smi",
+            "--query-gpu=memory.free,memory.total",
+            "--format=csv,noheader,nounits",
+        ]
+        gpu_index = self._resolve_gpu_index()
+        if gpu_index is not None:
+            command.insert(1, f"--id={gpu_index}")
+        try:
+            completed = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except Exception as exc:
+            self._last_probe_error = repr(exc)
+            return None, None
+        lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        if not lines:
+            self._last_probe_error = "nvidia-smi returned no rows"
+            return None, None
+        try:
+            free_raw, total_raw = [part.strip() for part in lines[0].split(",", 1)]
+            free_vram_mb = int(free_raw)
+            total_vram_mb = int(total_raw)
+        except Exception as exc:
+            self._last_probe_error = f"failed to parse nvidia-smi output: {exc!r}"
+            return None, None
+        self._last_probe_error = None
+        return free_vram_mb, total_vram_mb
+
+    @staticmethod
+    def _resolve_gpu_index() -> str | None:
+        visible = os.getenv("CUDA_VISIBLE_DEVICES", "").strip()
+        if not visible:
+            return None
+        first = visible.split(",", 1)[0].strip()
+        if first.isdigit():
+            return first
+        return None
+
 
 def _require_api_key(settings: Settings, authorization: str | None) -> None:
     if not settings.api_key:
@@ -120,6 +255,7 @@ def create_app(settings: Settings | None = None, runtime: OcrRuntime | None = No
             "model": resolved_settings.model_id,
             "languages": list(resolved_settings.ocr_languages),
             "device": resolved_runtime.device_name,
+            "admission": resolved_runtime.admission_status(),
         }
 
     @app.get("/v1/models", response_model=ModelList)
@@ -136,34 +272,45 @@ def create_app(settings: Settings | None = None, runtime: OcrRuntime | None = No
         if tuple(languages) != resolved_settings.ocr_languages:
             log.info("request languages=%s differ from runtime default=%s", languages, resolved_settings.ocr_languages)
 
-        items: list[OcrItem] = []
-        for item in req.inputs:
-            data = base64.b64decode(item.data_base64)
-            mime_type = item.mime_type.lower()
-            if mime_type == "application/pdf":
-                pages = resolved_runtime.ocr_pdf(data, item.page_numbers)
-                joined = "\n\n".join(page.text for page in pages if page.text)
-                confidences = [page.confidence for page in pages if page.confidence is not None]
-                confidence = round(sum(confidences) / len(confidences), 4) if confidences else None
-                items.append(
-                    OcrItem(
-                        source_id=item.source_id,
-                        text=joined,
-                        confidence=confidence,
-                        warnings=[warning for page in pages for warning in page.warnings],
-                        pages=pages,
+        try:
+            with resolved_runtime.request_slot():
+                items: list[OcrItem] = []
+                for item in req.inputs:
+                    data = base64.b64decode(item.data_base64)
+                    mime_type = item.mime_type.lower()
+                    if mime_type == "application/pdf":
+                        pages = resolved_runtime.ocr_pdf(data, item.page_numbers)
+                        joined = "\n\n".join(page.text for page in pages if page.text)
+                        confidences = [page.confidence for page in pages if page.confidence is not None]
+                        confidence = round(sum(confidences) / len(confidences), 4) if confidences else None
+                        items.append(
+                            OcrItem(
+                                source_id=item.source_id,
+                                text=joined,
+                                confidence=confidence,
+                                warnings=[warning for page in pages for warning in page.warnings],
+                                pages=pages,
+                            )
+                        )
+                        continue
+                    result = resolved_runtime.ocr_image(data)
+                    items.append(
+                        OcrItem(
+                            source_id=item.source_id,
+                            text=result.text,
+                            confidence=result.confidence,
+                            warnings=result.warnings or ([] if result.text else ["no text recognized"]),
+                        )
                     )
-                )
-                continue
-            result = resolved_runtime.ocr_image(data)
-            items.append(
-                OcrItem(
-                    source_id=item.source_id,
-                    text=result.text,
-                    confidence=result.confidence,
-                    warnings=result.warnings or ([] if result.text else ["no text recognized"]),
-                )
-            )
+        except RuntimeBusyError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "OCR_RUNTIME_BUSY",
+                    "message": "OCR runtime admission timed out while waiting for free GPU capacity",
+                    "admission": exc.snapshot,
+                },
+            ) from exc
 
         return OcrResponse(model=req.model or resolved_settings.model_id, data=items)
 

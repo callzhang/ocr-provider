@@ -53,7 +53,33 @@ if [[ "${OCR_DEVICE:-auto}" == "cuda" ]]; then
   export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 fi
 
-nohup "$VENV_DIR/bin/uvicorn" provider.app:app \
+if [[ "$(uname -s)" == "Linux" ]]; then
+  NVIDIA_LIB_DIRS="$("$VENV_DIR/bin/python" - <<'PY'
+from __future__ import annotations
+
+from pathlib import Path
+import site
+
+dirs: list[str] = []
+seen: set[str] = set()
+for base in site.getsitepackages():
+    root = Path(base) / "nvidia"
+    if not root.exists():
+        continue
+    for lib_dir in root.glob("*/lib"):
+        value = str(lib_dir)
+        if value not in seen and lib_dir.is_dir():
+            seen.add(value)
+            dirs.append(value)
+print(":".join(dirs))
+PY
+)"
+  if [[ -n "$NVIDIA_LIB_DIRS" ]]; then
+    export LD_LIBRARY_PATH="${NVIDIA_LIB_DIRS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
+fi
+
+nohup env LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" "$VENV_DIR/bin/uvicorn" provider.app:app \
   --app-dir "$ROOT_DIR" \
   --host "${BIND_HOST:-127.0.0.1}" \
   --port "${PORT:-8000}" \

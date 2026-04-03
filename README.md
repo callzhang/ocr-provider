@@ -36,6 +36,11 @@ OCR_MODEL_STORAGE_DIR=./runtime-cache/rapidocr-zh-en
 OCR_PARAGRAPH=true
 PDF_RENDER_SCALE=2.0
 API_KEY=change-me
+OCR_MAX_CONCURRENCY=4
+OCR_QUEUE_TIMEOUT_SECONDS=15
+OCR_QUEUE_POLL_SECONDS=0.2
+OCR_GPU_MIN_FREE_VRAM_MB=4096
+OCR_GPU_PER_REQUEST_VRAM_MB=3072
 ```
 
 Notes:
@@ -43,6 +48,33 @@ Notes:
 - `rapidocr` is the only production-supported OCR profile in this repo right now.
 - The service code still contains experimental engine paths from evaluation work, but deployment docs intentionally standardize on `rapidocr`.
 - `rapidocr` uses ONNX Runtime and can route to CUDA or CoreML when the matching execution provider is available.
+- On CUDA hosts, admission control probes free VRAM before each request and only admits work when headroom remains above the configured floor.
+
+## Admission Control
+
+To avoid overrunning shared GPUs, `ocr-provider` gates each request before inference starts.
+
+- `OCR_MAX_CONCURRENCY`: absolute upper bound for in-flight OCR requests
+- `OCR_GPU_MIN_FREE_VRAM_MB`: free VRAM that must remain reserved for other workloads
+- `OCR_GPU_PER_REQUEST_VRAM_MB`: conservative per-request VRAM budget used to derive current capacity
+- `OCR_QUEUE_TIMEOUT_SECONDS`: how long a request may wait for a slot before the API returns `503 OCR_RUNTIME_BUSY`
+- `OCR_QUEUE_POLL_SECONDS`: how often waiting requests re-check VRAM and queue state
+
+On `OCR_DEVICE=cuda`, the runtime computes:
+
+```text
+dynamic_limit = min(
+  OCR_MAX_CONCURRENCY,
+  max(0, (free_vram_mb - OCR_GPU_MIN_FREE_VRAM_MB) // OCR_GPU_PER_REQUEST_VRAM_MB)
+)
+```
+
+That means:
+
+- if shared GPU pressure rises, `dynamic_limit` drops automatically
+- if there is no safe headroom, new requests queue instead of starting
+- if the queue waits too long, callers get a retriable `503`
+- `/healthz` exposes the live admission snapshot so admins can inspect `active_requests`, `queued_requests`, `dynamic_limit`, and `free_vram_mb`
 
 ## API
 
@@ -82,7 +114,7 @@ Sample local presets:
 
 - `.env.example`: `rapidocr` + `auto`, for local runs beside the backend service
 - `deployments/local/rapidocr-cpu.env.example`: `rapidocr` + `cpu`, for deterministic local CPU fallback
-- `deployments/gpu4/rapidocr-auto.env.example`: `rapidocr` + `auto`, for the shared `stardust-gpu4` host
+- `deployments/gpu4/rapidocr-auto.env.example`: `rapidocr` + explicit `cuda`, for the shared `stardust-gpu4` host
 
 ## Benchmark
 
@@ -101,6 +133,7 @@ Decision summary:
 - The real-world benchmark uses `dfcfw-page1.png` and ground truth extracted from the corresponding PDF page.
 - `rapidocr` was the only tested lightweight engine that produced usable Chinese output on that sample.
 - On this macOS host, `rapidocr` under `OCR_DEVICE=auto` resolved to CoreML and scored `0.6866` on the PNG path.
+- On `stardust-gpu4`, `rapidocr + cuda` completed a 6-request local burst in `1.737s`, peaked at `active_requests=4`, queued `2`, and kept minimum free VRAM at `22886MB`.
 
 ## Stardust GPU4
 
@@ -108,6 +141,8 @@ Decision summary:
 - Private bind: `127.0.0.1:7998`
 - Public base URL: `https://ocr.preseen.ai/v1`
 - Deployment policy: do not modify shared host CUDA or other system-level GPU components
+- The `gpu4` env pins `onnxruntime-gpu` through the service venv only; it does not change system CUDA
+- The `gpu4` profile uses VRAM-gated admission control so concurrency drops automatically when the shared GPU gets crowded
 
 Recommended host workflow:
 

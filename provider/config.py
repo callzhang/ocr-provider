@@ -46,6 +46,11 @@ class Settings:
     paragraph: bool
     model_storage_dir: Path
     render_scale: float
+    max_concurrency: int
+    queue_timeout_seconds: float
+    queue_poll_seconds: float
+    gpu_min_free_vram_mb: int
+    gpu_per_request_vram_mb: int
     tesseract_cmd: str | None
     paddle_text_detection_model_name: str | None
     paddle_text_recognition_model_name: str | None
@@ -76,6 +81,11 @@ class Settings:
             paragraph=_env_bool("OCR_PARAGRAPH", True),
             model_storage_dir=Path(os.getenv("OCR_MODEL_STORAGE_DIR") or os.getenv("MODEL_STORAGE_DIR") or "./runtime-cache/ocr"),
             render_scale=float(os.getenv("PDF_RENDER_SCALE", "2.0")),
+            max_concurrency=max(1, int(os.getenv("OCR_MAX_CONCURRENCY", "4"))),
+            queue_timeout_seconds=max(0.1, float(os.getenv("OCR_QUEUE_TIMEOUT_SECONDS", "15"))),
+            queue_poll_seconds=max(0.05, float(os.getenv("OCR_QUEUE_POLL_SECONDS", "0.2"))),
+            gpu_min_free_vram_mb=max(0, int(os.getenv("OCR_GPU_MIN_FREE_VRAM_MB", "4096"))),
+            gpu_per_request_vram_mb=max(1, int(os.getenv("OCR_GPU_PER_REQUEST_VRAM_MB", "3072"))),
             tesseract_cmd=os.getenv("TESSERACT_CMD") or None,
             paddle_text_detection_model_name=os.getenv("PADDLE_OCR_TEXT_DETECTION_MODEL_NAME") or None,
             paddle_text_recognition_model_name=os.getenv("PADDLE_OCR_TEXT_RECOGNITION_MODEL_NAME") or None,
