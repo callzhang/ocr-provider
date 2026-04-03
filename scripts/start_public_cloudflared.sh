@@ -30,7 +30,7 @@ if [[ -n "${PUBLIC_TUNNEL_TOKEN:-}" ]]; then
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
     --network host \
-    cloudflare/cloudflared:latest tunnel --no-autoupdate run --token "$PUBLIC_TUNNEL_TOKEN" >/dev/null
+    cloudflare/cloudflared:latest tunnel --no-autoupdate run --token "$PUBLIC_TUNNEL_TOKEN" --url "http://${PUBLIC_UPSTREAM}" >/dev/null
 else
   docker run -d \
     --name "$CONTAINER_NAME" \
