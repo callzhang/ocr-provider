@@ -49,6 +49,8 @@ class Settings:
     max_concurrency: int
     queue_timeout_seconds: float
     queue_poll_seconds: float
+    idle_offload_seconds: float
+    idle_offload_poll_seconds: float
     gpu_min_free_vram_mb: int
     gpu_per_request_vram_mb: int
     tesseract_cmd: str | None
@@ -84,6 +86,8 @@ class Settings:
             max_concurrency=max(1, int(os.getenv("OCR_MAX_CONCURRENCY", "4"))),
             queue_timeout_seconds=max(0.1, float(os.getenv("OCR_QUEUE_TIMEOUT_SECONDS", "15"))),
             queue_poll_seconds=max(0.05, float(os.getenv("OCR_QUEUE_POLL_SECONDS", "0.2"))),
+            idle_offload_seconds=max(0.0, float(os.getenv("OCR_IDLE_OFFLOAD_SECONDS", "1800"))),
+            idle_offload_poll_seconds=max(1.0, float(os.getenv("OCR_IDLE_OFFLOAD_POLL_SECONDS", "30"))),
             gpu_min_free_vram_mb=max(0, int(os.getenv("OCR_GPU_MIN_FREE_VRAM_MB", "4096"))),
             gpu_per_request_vram_mb=max(1, int(os.getenv("OCR_GPU_PER_REQUEST_VRAM_MB", "3072"))),
             tesseract_cmd=os.getenv("TESSERACT_CMD") or None,

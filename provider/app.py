@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
+import gc
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Literal
@@ -68,9 +70,26 @@ class ModelList(BaseModel):
 class OcrRuntime:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._engine_lock = threading.Condition()
         self._engine: OcrEngine = build_engine(settings)
         self.device_name = self._engine.device_name
         self._admission = RuntimeAdmissionController(settings, self.device_name)
+        self._preferred_loaded_device = self.device_name
+        self._inflight_requests = 0
+        self._reload_in_progress = False
+        self._engine_state = "hot"
+        self._last_request_finished_at = time.monotonic()
+        self._last_offloaded_at: float | None = None
+        self._idle_offload_enabled = self.device_name == "cuda" and settings.idle_offload_seconds > 0
+        self._shutdown_event = threading.Event()
+        self._idle_offload_thread: threading.Thread | None = None
+        if self._idle_offload_enabled:
+            self._idle_offload_thread = threading.Thread(
+                target=self._idle_offload_loop,
+                name="ocr-idle-offload",
+                daemon=True,
+            )
+            self._idle_offload_thread.start()
 
     def ocr_image(self, data: bytes) -> EngineOcrResult:
         return self._engine.ocr_image(data)
@@ -106,10 +125,108 @@ class OcrRuntime:
     @contextmanager
     def request_slot(self) -> Any:
         with self._admission.acquire():
-            yield
+            self._begin_request()
+            try:
+                yield
+            finally:
+                self._finish_request()
 
     def admission_status(self) -> dict[str, Any]:
         return self._admission.status()
+
+    def runtime_status(self) -> dict[str, Any]:
+        with self._engine_lock:
+            idle_for = max(0.0, time.monotonic() - self._last_request_finished_at)
+            offloaded_for = None
+            if self._last_offloaded_at is not None:
+                offloaded_for = max(0.0, time.monotonic() - self._last_offloaded_at)
+            return {
+                "loaded_device": self.device_name,
+                "preferred_device": self._preferred_loaded_device,
+                "engine_state": self._engine_state,
+                "idle_offload_enabled": self._idle_offload_enabled,
+                "idle_offload_seconds": self._settings.idle_offload_seconds if self._idle_offload_enabled else None,
+                "idle_offload_poll_seconds": (
+                    self._settings.idle_offload_poll_seconds if self._idle_offload_enabled else None
+                ),
+                "inflight_requests": self._inflight_requests,
+                "idle_for_seconds": round(idle_for, 3),
+                "offloaded_for_seconds": round(offloaded_for, 3) if offloaded_for is not None else None,
+                "reload_in_progress": self._reload_in_progress,
+            }
+
+    def close(self) -> None:
+        self._shutdown_event.set()
+        if self._idle_offload_thread is not None:
+            self._idle_offload_thread.join(timeout=1)
+
+    def _begin_request(self) -> None:
+        with self._engine_lock:
+            self._inflight_requests += 1
+            self._engine_lock.notify_all()
+        try:
+            self._ensure_hot_engine()
+        except Exception:
+            self._finish_request()
+            raise
+
+    def _finish_request(self) -> None:
+        with self._engine_lock:
+            self._inflight_requests = max(0, self._inflight_requests - 1)
+            self._last_request_finished_at = time.monotonic()
+            self._engine_lock.notify_all()
+
+    def _ensure_hot_engine(self) -> None:
+        if not self._idle_offload_enabled:
+            return
+        with self._engine_lock:
+            while self._reload_in_progress:
+                self._engine_lock.wait()
+            if self._engine_state == "hot":
+                return
+            self._reload_in_progress = True
+        try:
+            self._swap_engine(build_engine(self._settings), engine_state="hot")
+        finally:
+            with self._engine_lock:
+                self._reload_in_progress = False
+                self._engine_lock.notify_all()
+
+    def _idle_offload_loop(self) -> None:
+        while not self._shutdown_event.wait(self._settings.idle_offload_poll_seconds):
+            self._maybe_offload_to_cpu()
+
+    def _maybe_offload_to_cpu(self) -> None:
+        if not self._idle_offload_enabled:
+            return
+        with self._engine_lock:
+            if self._reload_in_progress or self._engine_state == "offloaded" or self._inflight_requests > 0:
+                return
+            idle_for = time.monotonic() - self._last_request_finished_at
+            if idle_for < self._settings.idle_offload_seconds:
+                return
+            self._reload_in_progress = True
+        try:
+            self._swap_engine(build_engine(self._settings, ocr_device_override="cpu"), engine_state="offloaded")
+        finally:
+            with self._engine_lock:
+                self._reload_in_progress = False
+                self._engine_lock.notify_all()
+
+    def _swap_engine(self, next_engine: OcrEngine, engine_state: str) -> None:
+        with self._engine_lock:
+            old_engine = self._engine
+            self._engine = next_engine
+            self.device_name = next_engine.device_name
+            self._engine_state = engine_state
+            if engine_state == "offloaded":
+                self._last_offloaded_at = time.monotonic()
+            else:
+                self._last_offloaded_at = None
+        if old_engine is not next_engine:
+            del old_engine
+            gc.collect()
+            _release_accelerator_cache()
 
 
 class RuntimeBusyError(RuntimeError):
@@ -256,7 +373,12 @@ def create_app(settings: Settings | None = None, runtime: OcrRuntime | None = No
             "languages": list(resolved_settings.ocr_languages),
             "device": resolved_runtime.device_name,
             "admission": resolved_runtime.admission_status(),
+            "runtime": resolved_runtime.runtime_status(),
         }
+
+    @app.on_event("shutdown")
+    def shutdown_runtime() -> None:
+        resolved_runtime.close()
 
     @app.get("/v1/models", response_model=ModelList)
     def list_models() -> ModelList:
@@ -318,3 +440,14 @@ def create_app(settings: Settings | None = None, runtime: OcrRuntime | None = No
 
 
 app = create_app()
+
+
+def _release_accelerator_cache() -> None:
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            log.exception("failed to empty torch CUDA cache after OCR engine swap")

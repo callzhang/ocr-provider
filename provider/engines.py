@@ -7,6 +7,7 @@ import sys
 import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
@@ -34,7 +35,9 @@ class OcrEngine(Protocol):
         ...
 
 
-def build_engine(settings: Settings) -> OcrEngine:
+def build_engine(settings: Settings, ocr_device_override: str | None = None) -> OcrEngine:
+    if ocr_device_override is not None:
+        settings = replace(settings, ocr_device=ocr_device_override)
     provider = settings.ocr_provider.strip().lower()
     if provider == "easyocr":
         return EasyOcrEngine(settings)
