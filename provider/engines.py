@@ -35,6 +35,42 @@ class OcrEngine(Protocol):
         ...
 
 
+def resolve_runtime_device(settings: Settings, ocr_device_override: str | None = None) -> str:
+    if ocr_device_override is not None:
+        settings = replace(settings, ocr_device=ocr_device_override)
+    provider = settings.ocr_provider.strip().lower()
+    if provider in {"rapidocr", "onnxtr"}:
+        providers = _available_onnx_providers()
+        if settings.ocr_device == "auto":
+            if "CUDAExecutionProvider" in providers:
+                return "cuda"
+            if "CoreMLExecutionProvider" in providers:
+                return "coreml"
+            return "cpu"
+        if settings.ocr_device == "cuda":
+            return "cuda" if "CUDAExecutionProvider" in providers else "cpu"
+        if settings.ocr_device in {"mps", "coreml"}:
+            return "coreml" if "CoreMLExecutionProvider" in providers else "cpu"
+        return "cpu"
+    if provider == "easyocr":
+        import torch
+
+        if settings.ocr_device == "auto":
+            if torch.cuda.is_available():
+                return "cuda"
+            if _torch_mps_available(torch):
+                return "mps"
+            return "cpu"
+        if settings.ocr_device == "cuda":
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        if settings.ocr_device in {"mps", "coreml"}:
+            return "mps" if _torch_mps_available(torch) else "cpu"
+        return "cpu"
+    if provider == "paddleocr":
+        return _resolve_paddle_device(settings.ocr_device)
+    return "cpu"
+
+
 def build_engine(settings: Settings, ocr_device_override: str | None = None) -> OcrEngine:
     if ocr_device_override is not None:
         settings = replace(settings, ocr_device=ocr_device_override)

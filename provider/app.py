@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 from contextlib import contextmanager
 import gc
+import json
 import logging
 import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -16,7 +18,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from provider.config import Settings
-from provider.engines import EngineOcrResult, OcrEngine, build_engine
+from provider.engines import EngineOcrResult, OcrEngine, build_engine, resolve_runtime_device
 
 log = logging.getLogger("ocr_provider")
 logging.basicConfig(level="INFO")
@@ -67,20 +69,128 @@ class ModelList(BaseModel):
     data: list[ModelInfo]
 
 
+class _GpuOcrWorker:
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._root_dir = Path(__file__).resolve().parents[1]
+        self._process: subprocess.Popen[str] | None = None
+        self._io_lock = threading.RLock()
+        self._device_name = "none"
+
+    @property
+    def device_name(self) -> str:
+        return self._device_name
+
+    @property
+    def pid(self) -> int | None:
+        if self._process is None:
+            return None
+        return self._process.pid
+
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    def ensure_started(self) -> str:
+        with self._io_lock:
+            if self.is_running():
+                return self._device_name
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            env["OCR_DEVICE"] = "cuda"
+            self._process = subprocess.Popen(
+                [sys.executable, "-m", "provider.gpu_worker"],
+                cwd=str(self._root_dir),
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            message = self._read_message()
+            if str(message.get("status")) != "ready":
+                self.terminate()
+                raise RuntimeError(str(message.get("error") or "failed to start OCR GPU worker"))
+            self._device_name = str(message.get("device") or "cuda")
+            return self._device_name
+
+    def ocr_image(self, data: bytes) -> EngineOcrResult:
+        payload = {
+            "op": "ocr_image",
+            "data_base64": base64.b64encode(data).decode("ascii"),
+        }
+        response = self._request(payload)
+        return EngineOcrResult(
+            text=str(response.get("text") or ""),
+            confidence=float(response["confidence"]) if response.get("confidence") is not None else None,
+            warnings=[str(item) for item in response.get("warnings") or []],
+        )
+
+    def terminate(self) -> None:
+        with self._io_lock:
+            process = self._process
+            self._process = None
+            self._device_name = "none"
+            if process is None:
+                return
+            if process.poll() is None:
+                try:
+                    self._write_message({"op": "shutdown"}, process=process)
+                    process.wait(timeout=2)
+                except Exception:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except Exception:
+                        process.kill()
+                        process.wait(timeout=5)
+
+    def _request(self, payload: dict[str, object]) -> dict[str, object]:
+        with self._io_lock:
+            self.ensure_started()
+            self._write_message(payload)
+            response = self._read_message()
+        if str(response.get("status")) != "ok":
+            raise RuntimeError(str(response.get("error") or "OCR GPU worker request failed"))
+        return response
+
+    def _write_message(self, payload: dict[str, object], *, process: subprocess.Popen[str] | None = None) -> None:
+        target = process or self._process
+        if target is None or target.stdin is None:
+            raise RuntimeError("OCR GPU worker stdin is unavailable")
+        target.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        target.stdin.flush()
+
+    def _read_message(self) -> dict[str, object]:
+        if self._process is None or self._process.stdout is None:
+            raise RuntimeError("OCR GPU worker stdout is unavailable")
+        line = self._process.stdout.readline()
+        if not line:
+            return {"status": "error", "error": "OCR GPU worker exited before responding"}
+        return json.loads(line)
+
+
 class OcrRuntime:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._engine_lock = threading.Condition()
-        self._engine: OcrEngine = build_engine(settings)
-        self.device_name = self._engine.device_name
-        self._admission = RuntimeAdmissionController(settings, self.device_name)
-        self._preferred_loaded_device = self.device_name
+        self._preferred_loaded_device = resolve_runtime_device(settings)
+        self._use_gpu_worker = self._preferred_loaded_device == "cuda"
+        self._engine: OcrEngine | None = None
+        self._gpu_worker: _GpuOcrWorker | None = None
+        if self._use_gpu_worker:
+            self.device_name = "none"
+            self._engine_state = "offloaded"
+            self._gpu_worker = _GpuOcrWorker(settings)
+        else:
+            self._engine = build_engine(settings)
+            self.device_name = self._engine.device_name
+            self._engine_state = "hot"
+        self._admission = RuntimeAdmissionController(settings, self._preferred_loaded_device)
         self._inflight_requests = 0
         self._reload_in_progress = False
-        self._engine_state = "hot"
         self._last_request_finished_at = time.monotonic()
         self._last_offloaded_at: float | None = None
-        self._idle_offload_enabled = self.device_name == "cuda" and settings.idle_offload_seconds > 0
+        self._idle_offload_enabled = self._preferred_loaded_device == "cuda" and settings.idle_offload_seconds > 0
         self._shutdown_event = threading.Event()
         self._idle_offload_thread: threading.Thread | None = None
         if self._idle_offload_enabled:
@@ -92,6 +202,12 @@ class OcrRuntime:
             self._idle_offload_thread.start()
 
     def ocr_image(self, data: bytes) -> EngineOcrResult:
+        if self._use_gpu_worker:
+            if self._gpu_worker is None:
+                raise RuntimeError("OCR GPU worker is unavailable")
+            return self._gpu_worker.ocr_image(data)
+        if self._engine is None:
+            raise RuntimeError("OCR engine is unavailable")
         return self._engine.ocr_image(data)
 
     def ocr_pdf(self, data: bytes, page_numbers: list[int] | None) -> list[OcrPageResult]:
@@ -153,12 +269,15 @@ class OcrRuntime:
                 "idle_for_seconds": round(idle_for, 3),
                 "offloaded_for_seconds": round(offloaded_for, 3) if offloaded_for is not None else None,
                 "reload_in_progress": self._reload_in_progress,
+                "worker_pid": self._gpu_worker.pid if self._gpu_worker is not None and self._gpu_worker.is_running() else None,
             }
 
     def close(self) -> None:
         self._shutdown_event.set()
         if self._idle_offload_thread is not None:
             self._idle_offload_thread.join(timeout=1)
+        if self._gpu_worker is not None:
+            self._gpu_worker.terminate()
 
     def _begin_request(self) -> None:
         with self._engine_lock:
@@ -186,7 +305,16 @@ class OcrRuntime:
                 return
             self._reload_in_progress = True
         try:
-            self._swap_engine(build_engine(self._settings), engine_state="hot")
+            if self._use_gpu_worker:
+                if self._gpu_worker is None:
+                    raise RuntimeError("OCR GPU worker is unavailable")
+                device_name = self._gpu_worker.ensure_started()
+                with self._engine_lock:
+                    self.device_name = device_name
+                    self._engine_state = "hot"
+                    self._last_offloaded_at = None
+            else:
+                self._swap_engine(build_engine(self._settings), engine_state="hot")
         finally:
             with self._engine_lock:
                 self._reload_in_progress = False
@@ -207,13 +335,23 @@ class OcrRuntime:
                 return
             self._reload_in_progress = True
         try:
-            self._swap_engine(build_engine(self._settings, ocr_device_override="cpu"), engine_state="offloaded")
+            if self._use_gpu_worker:
+                if self._gpu_worker is not None:
+                    self._gpu_worker.terminate()
+                with self._engine_lock:
+                    self.device_name = "none"
+                    self._engine_state = "offloaded"
+                    self._last_offloaded_at = time.monotonic()
+            else:
+                self._swap_engine(build_engine(self._settings, ocr_device_override="cpu"), engine_state="offloaded")
         finally:
             with self._engine_lock:
                 self._reload_in_progress = False
                 self._engine_lock.notify_all()
 
     def _swap_engine(self, next_engine: OcrEngine, engine_state: str) -> None:
+        if self._use_gpu_worker:
+            raise RuntimeError("_swap_engine is unavailable in GPU worker mode")
         with self._engine_lock:
             old_engine = self._engine
             self._engine = next_engine

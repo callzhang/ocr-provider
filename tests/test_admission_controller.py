@@ -83,13 +83,32 @@ class RuntimeAdmissionControllerTests(unittest.TestCase):
         self.assertEqual(observed_queued, [0])
 
 @dataclass
-class FakeEngine:
-    provider_name: str
-    model_id: str
-    device_name: str
+class FakeWorker:
+    settings: Settings
+    starts: int = 0
+    stops: int = 0
+    running: bool = False
+
+    @property
+    def pid(self) -> int | None:
+        return 1234 if self.running else None
+
+    def is_running(self) -> bool:
+        return self.running
+
+    def ensure_started(self) -> str:
+        self.starts += 1
+        self.running = True
+        return "cuda"
 
     def ocr_image(self, data: bytes) -> object:
+        self.ensure_started()
         return object()
+
+    def terminate(self) -> None:
+        if self.running:
+            self.stops += 1
+        self.running = False
 
 
 class OcrRuntimeIdleOffloadTests(unittest.TestCase):
@@ -116,21 +135,30 @@ class OcrRuntimeIdleOffloadTests(unittest.TestCase):
         self._env_stack.close()
 
     def test_idle_runtime_offloads_and_reloads(self) -> None:
-        build_calls: list[str] = []
+        workers: list[FakeWorker] = []
 
-        def fake_build_engine(settings: Settings, ocr_device_override: str | None = None) -> FakeEngine:
-            device = ocr_device_override or "cuda"
-            build_calls.append(device)
-            return FakeEngine(provider_name="rapidocr", model_id=settings.model_id, device_name=device)
+        def fake_worker_factory(settings: Settings) -> FakeWorker:
+            worker = FakeWorker(settings=settings)
+            workers.append(worker)
+            return worker
 
-        with patch("provider.app.build_engine", side_effect=fake_build_engine):
+        with (
+            patch("provider.app.resolve_runtime_device", return_value="cuda"),
+            patch("provider.app._GpuOcrWorker", side_effect=fake_worker_factory),
+        ):
             runtime = OcrRuntime(Settings.from_env())
             try:
+                self.assertEqual(runtime.runtime_status()["loaded_device"], "none")
+                with patch.object(runtime._admission, "_probe_cuda_memory_mb", return_value=(27442, 32607)):
+                    with runtime.request_slot():
+                        warm_status = runtime.runtime_status()
+                        self.assertEqual(warm_status["engine_state"], "hot")
+                        self.assertEqual(warm_status["loaded_device"], "cuda")
                 runtime._last_request_finished_at -= 1
                 runtime._maybe_offload_to_cpu()
                 status = runtime.runtime_status()
                 self.assertEqual(status["engine_state"], "offloaded")
-                self.assertEqual(status["loaded_device"], "cpu")
+                self.assertEqual(status["loaded_device"], "none")
 
                 with patch.object(runtime._admission, "_probe_cuda_memory_mb", return_value=(27442, 32607)):
                     with runtime.request_slot():
@@ -140,7 +168,9 @@ class OcrRuntimeIdleOffloadTests(unittest.TestCase):
             finally:
                 runtime.close()
 
-        self.assertEqual(build_calls, ["cuda", "cpu", "cuda"])
+        self.assertEqual(len(workers), 1)
+        self.assertGreaterEqual(workers[0].starts, 1)
+        self.assertGreaterEqual(workers[0].stops, 1)
 
 
 if __name__ == "__main__":

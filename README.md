@@ -61,8 +61,8 @@ To avoid overrunning shared GPUs, `ocr-provider` gates each request before infer
 - `OCR_GPU_PER_REQUEST_VRAM_MB`: conservative per-request VRAM budget used to derive current capacity
 - `OCR_QUEUE_TIMEOUT_SECONDS`: how long a request may wait for a slot before the API returns `503 OCR_RUNTIME_BUSY`
 - `OCR_QUEUE_POLL_SECONDS`: how often waiting requests re-check VRAM and queue state
-- `OCR_IDLE_OFFLOAD_SECONDS`: how long the CUDA engine may sit idle before the service swaps it out for a CPU-loaded copy
-- `OCR_IDLE_OFFLOAD_POLL_SECONDS`: how often the background idle monitor checks whether it should offload
+- `OCR_IDLE_OFFLOAD_SECONDS`: how long the CUDA worker may sit idle before the service terminates it
+- `OCR_IDLE_OFFLOAD_POLL_SECONDS`: how often the background idle monitor checks whether it should terminate the worker
 
 On `OCR_DEVICE=cuda`, the runtime computes:
 
@@ -79,8 +79,9 @@ That means:
 - if there is no safe headroom, new requests queue instead of starting
 - if the queue waits too long, callers get a retriable `503`
 - `/healthz` exposes the live admission snapshot so admins can inspect `active_requests`, `queued_requests`, `dynamic_limit`, and `free_vram_mb`
-- when the service has been idle for `OCR_IDLE_OFFLOAD_SECONDS`, it swaps the live CUDA engine for a CPU-loaded copy so VRAM is released
-- the next request automatically reloads the preferred accelerator path before OCR starts
+- when the service has been idle for `OCR_IDLE_OFFLOAD_SECONDS`, the dedicated CUDA OCR worker exits so VRAM is actually released
+- the next request automatically starts a fresh CUDA worker before OCR begins
+- `/healthz` also exposes `runtime.worker_pid` so admins can see whether a live GPU worker still exists
 
 ## API
 
@@ -149,7 +150,7 @@ Decision summary:
 - Deployment policy: do not modify shared host CUDA or other system-level GPU components
 - The `gpu4` env pins `onnxruntime-gpu` through the service venv only; it does not change system CUDA
 - The `gpu4` profile uses VRAM-gated admission control so concurrency drops automatically when the shared GPU gets crowded
-- The `gpu4` profile also enables idle offload after `30` minutes so unused OCR weights do not occupy shared VRAM indefinitely
+- The `gpu4` profile also enables idle worker termination after `30` minutes so unused OCR weights do not occupy shared VRAM indefinitely
 
 Recommended host workflow:
 
