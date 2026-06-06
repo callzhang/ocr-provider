@@ -52,6 +52,20 @@ Notes:
 - `rapidocr` uses ONNX Runtime and can route to CUDA or CoreML when the matching execution provider is available.
 - On CUDA hosts, admission control probes free VRAM before each request and only admits work when headroom remains above the configured floor.
 
+## Layout postprocessing
+
+RapidOCR returns detected text boxes in a horizontal reading order by default: top-to-bottom, left-to-right. The provider keeps that behavior for normal horizontal pages, then applies a small reading-order postprocessor when a page is detected as traditional vertical text.
+
+Configuration:
+
+- `OCR_LAYOUT_MODE=auto`: default. Preserve RapidOCR order for horizontal pages and reorder vertical pages right-to-left.
+- `OCR_LAYOUT_MODE=horizontal`: always preserve RapidOCR result order.
+- `OCR_LAYOUT_MODE=vertical`: always sort text blocks right-to-left, then top-to-bottom.
+- `OCR_LAYOUT_MODE=none`: join raw OCR text blocks in the engine result order without layout detection.
+- `OCR_LAYOUT_DROP_FOOTER=true`: default. In vertical mode, drop horizontal footer/page-number blocks near the bottom of the page.
+
+This changes only the returned `text` content. The `/v1/ocr` response schema is unchanged.
+
 ## Admission Control
 
 To avoid overrunning shared GPUs, `ocr-provider` gates each request before inference starts.

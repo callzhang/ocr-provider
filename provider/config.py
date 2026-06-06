@@ -28,6 +28,14 @@ def _env_languages(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
+def _env_layout_mode(name: str, default: str) -> str:
+    value = os.getenv(name)
+    normalized = str(value or default).strip().lower()
+    if normalized in {"auto", "horizontal", "vertical", "none"}:
+        return normalized
+    return default
+
+
 def _legacy_device_default() -> str:
     if "USE_GPU" not in os.environ:
         return "auto"
@@ -61,6 +69,8 @@ class Settings:
     paddle_use_doc_unwarping: bool
     paddle_use_textline_orientation: bool
     paddle_disable_model_source_check: bool
+    ocr_layout_mode: str = "auto"
+    ocr_layout_drop_footer: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -83,6 +93,8 @@ class Settings:
             paragraph=_env_bool("OCR_PARAGRAPH", True),
             model_storage_dir=Path(os.getenv("OCR_MODEL_STORAGE_DIR") or os.getenv("MODEL_STORAGE_DIR") or "./runtime-cache/ocr"),
             render_scale=float(os.getenv("PDF_RENDER_SCALE", "2.0")),
+            ocr_layout_mode=_env_layout_mode("OCR_LAYOUT_MODE", "auto"),
+            ocr_layout_drop_footer=_env_bool("OCR_LAYOUT_DROP_FOOTER", True),
             max_concurrency=max(1, int(os.getenv("OCR_MAX_CONCURRENCY", "4"))),
             queue_timeout_seconds=max(0.1, float(os.getenv("OCR_QUEUE_TIMEOUT_SECONDS", "15"))),
             queue_poll_seconds=max(0.05, float(os.getenv("OCR_QUEUE_POLL_SECONDS", "0.2"))),

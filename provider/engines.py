@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 from provider.config import Settings
+from provider.layout import OcrTextBlock, render_text_blocks
 
 log = logging.getLogger("ocr_provider")
 
@@ -24,6 +25,7 @@ class EngineOcrResult:
     text: str
     confidence: float | None = None
     warnings: list[str] = field(default_factory=list)
+    blocks: list[OcrTextBlock] = field(default_factory=list)
 
 
 class OcrEngine(Protocol):
@@ -275,7 +277,7 @@ class RapidOcrEngine(BaseImageEngine):
 
     def ocr_image(self, data: bytes) -> EngineOcrResult:
         result, _elapsed = self._engine(self._image_from_bytes(data))
-        lines: list[str] = []
+        blocks: list[OcrTextBlock] = []
         confidences: list[float] = []
         for item in result or []:
             if len(item) < 3:
@@ -283,13 +285,22 @@ class RapidOcrEngine(BaseImageEngine):
             text = str(item[1]).strip()
             if not text:
                 continue
-            lines.append(text)
+            confidence = None
             try:
-                confidences.append(float(item[2]))
+                confidence = float(item[2])
+                confidences.append(confidence)
             except (TypeError, ValueError):
-                continue
+                confidence = None
+            raw_box = item[0]
+            box = [[float(point[0]), float(point[1])] for point in raw_box]
+            blocks.append(OcrTextBlock(text=text, bbox=box, confidence=confidence))
         confidence = round(sum(confidences) / len(confidences), 4) if confidences else None
-        return EngineOcrResult(text="\n".join(lines).strip(), confidence=confidence)
+        text = render_text_blocks(
+            blocks,
+            mode=self._settings.ocr_layout_mode,
+            drop_footer=self._settings.ocr_layout_drop_footer,
+        )
+        return EngineOcrResult(text=text, confidence=confidence, blocks=blocks)
 
 
 class PaddleOcrEngine(BaseImageEngine):
