@@ -35,7 +35,6 @@ OCR_DEVICE=auto
 OCR_MODEL_STORAGE_DIR=./runtime-cache/rapidocr-zh-en
 OCR_PARAGRAPH=true
 PDF_RENDER_SCALE=2.0
-API_KEY=change-me
 OCR_MAX_CONCURRENCY=4
 OCR_QUEUE_TIMEOUT_SECONDS=15
 OCR_QUEUE_POLL_SECONDS=0.2
@@ -158,42 +157,67 @@ Decision summary:
 
 ## Stardust GPU4
 
-- Repo target: `stardust@stardust-gpu4:~/Projects/ocr-provider`
+- Repo target: `stardust@stardust-gpu4:~/services/ocr-provider`
 - Private bind: `127.0.0.1:7998`
 - Public base URL: `https://ocr.preseen.ai/v1`
+- Public authentication: Cloudflare Access Managed OAuth for employees and
+  Cloudflare Access service tokens for headless workloads
 - Deployment policy: do not modify shared host CUDA or other system-level GPU components
 - The `gpu4` env pins `onnxruntime-gpu` through the service venv only; it does not change system CUDA
 - The `gpu4` profile uses VRAM-gated admission control so concurrency drops automatically when the shared GPU gets crowded
 - The `gpu4` profile also enables idle worker termination after `30` minutes so unused OCR weights do not occupy shared VRAM indefinitely
 
-Recommended host workflow:
+### Access boundary and deployment order
+
+The application intentionally does not parse Cloudflare credentials. Cloudflare
+Access consumes the Managed OAuth bearer token or service-token headers before
+the request reaches the origin. This is safe only while all of these deployment
+invariants remain true:
+
+- the Access application protects the entire `ocr.preseen.ai` hostname, not
+  only selected `/v1` routes
+- the Access application has its own audience and Managed OAuth configuration
+- the origin listens on `127.0.0.1:7998`; it must not bind a LAN or public
+  address
+- the shared Cloudflare Tunnel is the only public route to that loopback origin
+
+Migrate in this order so removing the legacy key never creates a public gap:
+
+1. Create the `ocr.preseen.ai` Access application and policies.
+2. Read back HTTP `200` from
+   `/.well-known/cloudflare-access-protected-resource/` and HTTP `401` from an
+   unauthenticated API request.
+3. Reconfirm the loopback listener and Tunnel ingress target.
+4. Deploy the application version that no longer reads `API_KEY`, remove the
+   obsolete value from the host env file, and run authenticated smoke tests.
+
+Rollback is the reverse dependency order: restore the prior application commit
+and its `API_KEY`, verify origin authentication, and only then remove or disable
+the Access application. Never disable Access while the keyless application is
+running.
+
+Recommended host workflow after the Access prerequisite is verified:
 
 ```bash
 bash scripts/deploy_gpu4.sh
 ssh stardust-gpu4-stardust
-cd ~/Projects/ocr-provider
+cd ~/services/ocr-provider
 cp deployments/gpu4/rapidocr-auto.env.example deployments/gpu4/rapidocr-auto.env
 ./scripts/start_host_instance.sh deployments/gpu4/rapidocr-auto.env
-./scripts/start_public_cloudflared.sh deployments/gpu4/rapidocr-auto.env
 ```
 
-Before starting the named tunnel, create it and attach DNS from a machine already logged into Cloudflare:
-
-```bash
-cloudflared tunnel create ocr-provider-preseen-ai
-cloudflared tunnel route dns ocr-provider-preseen-ai ocr.preseen.ai
-cloudflared tunnel token ocr-provider-preseen-ai
-```
-
-Set the returned token into `deployments/gpu4/rapidocr-auto.env`:
-
-```bash
-PUBLIC_TUNNEL_TOKEN=<TOKEN>
-```
+The host-wide `preseen-gateway` tunnel owns the public ingress. Do not start a
+second per-service tunnel.
 
 Health checks:
 
 ```bash
-curl https://ocr.preseen.ai/healthz
-curl -H "Authorization: Bearer <API_KEY>" https://ocr.preseen.ai/v1/models
+curl http://127.0.0.1:7998/healthz
+curl -o /dev/null -w '%{http_code}\n' https://ocr.preseen.ai/v1/models
+curl -o /dev/null -w '%{http_code}\n' \
+  https://ocr.preseen.ai/.well-known/cloudflare-access-protected-resource/
 ```
+
+The unauthenticated public model request must return `401`; the Access metadata
+request must return `200`. Use the `ocr` skill or a Cloudflare Access service
+token for authenticated end-to-end calls rather than a static application key.

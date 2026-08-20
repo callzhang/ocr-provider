@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE="stardust-gpu4-stardust"
-REMOTE_DIR="~/Projects/ocr-provider"
+REMOTE_DIR="~/services/ocr-provider"
 
 ssh "$REMOTE" "mkdir -p $REMOTE_DIR"
 rsync -az \

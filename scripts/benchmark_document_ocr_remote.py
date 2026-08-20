@@ -82,7 +82,6 @@ class DirectDocumentOcrProvider:
             ocr_provider=self.target.provider,
             model_id=self.target.model or f"{self.target.provider}:{'+'.join(self.target.languages)}",
             model_alias=self.target.name,
-            api_key=None,
             ocr_languages=self.target.languages,
             ocr_device=self.target.device,
             paragraph=self.target.paragraph,

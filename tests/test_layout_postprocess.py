@@ -172,7 +172,6 @@ class LayoutConfigTests(unittest.TestCase):
             ocr_provider="rapidocr",
             model_id="rapidocr:ch_sim+en",
             model_alias=None,
-            api_key=None,
             ocr_languages=("ch_sim", "en"),
             ocr_device="cpu",
             paragraph=True,

@@ -48,7 +48,6 @@ class Settings:
     ocr_provider: str
     model_id: str
     model_alias: str | None
-    api_key: str | None
     ocr_languages: tuple[str, ...]
     ocr_device: str
     paragraph: bool
@@ -87,7 +86,6 @@ class Settings:
             ocr_provider=resolved_provider,
             model_id=model_id,
             model_alias=os.getenv("OCR_MODEL_ALIAS") or os.getenv("MODEL_ALIAS") or None,
-            api_key=os.getenv("API_KEY") or None,
             ocr_languages=_env_languages("OCR_LANGUAGES", ("ch_sim", "en")),
             ocr_device=_normalize_device(os.getenv("OCR_DEVICE") or _legacy_device_default()),
             paragraph=_env_bool("OCR_PARAGRAPH", True),
