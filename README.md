@@ -203,8 +203,14 @@ bash scripts/deploy_gpu4.sh
 ssh stardust-gpu4-stardust
 cd ~/services/ocr-provider
 cp deployments/gpu4/rapidocr-auto.env.example deployments/gpu4/rapidocr-auto.env
-./scripts/start_host_instance.sh deployments/gpu4/rapidocr-auto.env
+set -a && source deployments/gpu4/rapidocr-auto.env && set +a
+./scripts/bootstrap_venv.sh
+systemctl --user restart ocr-provider.service
 ```
+
+Dependency installation is an explicit deployment step. The systemd runner
+never invokes `bootstrap_venv.sh`, so a service restart does not depend on the
+availability of an external Python package index.
 
 The host-wide `preseen-gateway` tunnel owns the public ingress. Do not start a
 second per-service tunnel.

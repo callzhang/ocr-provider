@@ -25,8 +25,6 @@ set +a
 PORT="${PORT:-8000}"
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
 
-"$ROOT_DIR/scripts/bootstrap_venv.sh"
-
 MODEL_CACHE_DIR="${OCR_MODEL_STORAGE_DIR:-${MODEL_STORAGE_DIR:-./runtime-cache/ocr}}"
 if [[ -n "${HF_CACHE_DIR:-}" ]]; then
   mkdir -p "$ROOT_DIR/${HF_CACHE_DIR#./}"
