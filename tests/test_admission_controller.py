@@ -82,6 +82,34 @@ class RuntimeAdmissionControllerTests(unittest.TestCase):
         self.assertEqual(observed_active, [1])
         self.assertEqual(observed_queued, [0])
 
+
+class Gpu4QueueConfigurationTests(unittest.TestCase):
+    def test_default_queue_timeout_covers_gpu_cold_start_and_burst(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env()
+
+        self.assertEqual(settings.max_concurrency, 4)
+        self.assertEqual(settings.queue_timeout_seconds, 120.0)
+
+    def test_gpu4_deployment_profile_keeps_safe_concurrency_and_long_queue(self) -> None:
+        profile_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "deployments",
+            "gpu4",
+            "rapidocr-auto.env.example",
+        )
+        values = {}
+        with open(profile_path, encoding="utf-8") as profile:
+            for line in profile:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    values[key] = value
+
+        self.assertEqual(values["OCR_MAX_CONCURRENCY"], "4")
+        self.assertEqual(values["OCR_QUEUE_TIMEOUT_SECONDS"], "120")
+
+
 @dataclass
 class FakeWorker:
     settings: Settings

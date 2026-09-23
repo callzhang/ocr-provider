@@ -36,7 +36,7 @@ OCR_MODEL_STORAGE_DIR=./runtime-cache/rapidocr-zh-en
 OCR_PARAGRAPH=true
 PDF_RENDER_SCALE=2.0
 OCR_MAX_CONCURRENCY=4
-OCR_QUEUE_TIMEOUT_SECONDS=15
+OCR_QUEUE_TIMEOUT_SECONDS=120
 OCR_QUEUE_POLL_SECONDS=0.2
 OCR_IDLE_OFFLOAD_SECONDS=1800
 OCR_IDLE_OFFLOAD_POLL_SECONDS=30
@@ -91,6 +91,7 @@ That means:
 - if shared GPU pressure rises, `dynamic_limit` drops automatically
 - if there is no safe headroom, new requests queue instead of starting
 - if the queue waits too long, callers get a retriable `503`
+- the GPU4 profile allows a queued request to wait up to `120s`; this absorbs cold-worker startup and eval bursts without increasing the VRAM-gated concurrency cap of `4`. The backend OCR client timeout is `300s`, leaving time to return the structured busy response if capacity remains unavailable.
 - `/healthz` exposes the live admission snapshot so admins can inspect `active_requests`, `queued_requests`, `dynamic_limit`, and `free_vram_mb`
 - when the service has been idle for `OCR_IDLE_OFFLOAD_SECONDS`, the dedicated CUDA OCR worker exits so VRAM is actually released
 - the next request automatically starts a fresh CUDA worker before OCR begins
