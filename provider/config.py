@@ -94,7 +94,7 @@ class Settings:
             ocr_layout_mode=_env_layout_mode("OCR_LAYOUT_MODE", "auto"),
             ocr_layout_drop_footer=_env_bool("OCR_LAYOUT_DROP_FOOTER", True),
             max_concurrency=max(1, int(os.getenv("OCR_MAX_CONCURRENCY", "4"))),
-            queue_timeout_seconds=max(0.1, float(os.getenv("OCR_QUEUE_TIMEOUT_SECONDS", "15"))),
+            queue_timeout_seconds=max(0.1, float(os.getenv("OCR_QUEUE_TIMEOUT_SECONDS", "120"))),
             queue_poll_seconds=max(0.05, float(os.getenv("OCR_QUEUE_POLL_SECONDS", "0.2"))),
             idle_offload_seconds=max(0.0, float(os.getenv("OCR_IDLE_OFFLOAD_SECONDS", "1800"))),
             idle_offload_poll_seconds=max(1.0, float(os.getenv("OCR_IDLE_OFFLOAD_POLL_SECONDS", "30"))),
