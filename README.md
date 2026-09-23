@@ -135,7 +135,7 @@ Sample local presets:
 
 - `.env.example`: `rapidocr` + `auto`, for local runs beside the backend service
 - `deployments/local/rapidocr-cpu.env.example`: `rapidocr` + `cpu`, for deterministic local CPU fallback
-- `deployments/gpu4/rapidocr-auto.env.example`: `rapidocr` + explicit `cuda`, for the shared `stardust-gpu4` host
+- `deployments/gpu4/rapidocr-auto.env.example`: `rapidocr` + `cpu`, for OCR workloads sharing `stardust-gpu4` with the LLM runtime
 
 ## Benchmark
 
@@ -165,7 +165,8 @@ Decision summary:
   Cloudflare Access service tokens for headless workloads
 - Deployment policy: do not modify shared host CUDA or other system-level GPU components
 - The `gpu4` env pins `onnxruntime-gpu` through the service venv only; it does not change system CUDA
-- The `gpu4` profile uses VRAM-gated admission control so concurrency drops automatically when the shared GPU gets crowded
+- The `gpu4` profile keeps OCR on CPU because the shared GPU is reserved for the LLM runtime; setting OCR to CUDA on this host can leave no VRAM-admitted OCR capacity even when the OCR service is healthy
+- The `gpu4` profile retains its bounded OCR concurrency and queue timeout so CPU OCR bursts remain controlled
 - The `gpu4` profile also enables idle worker termination after `30` minutes so unused OCR weights do not occupy shared VRAM indefinitely
 
 ### Access boundary and deployment order

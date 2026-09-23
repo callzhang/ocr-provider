@@ -109,6 +109,23 @@ class Gpu4QueueConfigurationTests(unittest.TestCase):
         self.assertEqual(values["OCR_MAX_CONCURRENCY"], "4")
         self.assertEqual(values["OCR_QUEUE_TIMEOUT_SECONDS"], "120")
 
+    def test_gpu4_profile_keeps_ocr_off_the_shared_llm_gpu(self) -> None:
+        profile_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "deployments",
+            "gpu4",
+            "rapidocr-auto.env.example",
+        )
+        values = {}
+        with open(profile_path, encoding="utf-8") as profile:
+            for line in profile:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    values[key] = value
+
+        self.assertEqual(values["OCR_DEVICE"], "cpu")
+
 
 @dataclass
 class FakeWorker:
